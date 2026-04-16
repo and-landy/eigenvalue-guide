@@ -1,0 +1,498 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>Eigenvalue Field Guide</title>
+  <meta name="description" content="Interactive classification guide for 2×2 linear ODE systems — eigenvalues, phase portraits, and general solutions."/>
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/KaTeX/0.16.9/katex.min.css"/>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/KaTeX/0.16.9/katex.min.js"></script>
+  <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+  <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+  <script crossorigin src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+  <link href="https://fonts.googleapis.com/css2?family=Crimson+Pro:ital,wght@0,400;0,600;0,700;1,400&family=JetBrains+Mono:wght@400;600;700&display=swap" rel="stylesheet"/>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    body { -webkit-font-smoothing: antialiased; }
+    #root { min-height: 100vh; }
+  </style>
+</head>
+<body>
+  <div id="root"></div>
+  <script type="text/babel">
+const { useState, useEffect, useRef, useMemo, useCallback } = React;
+
+/* ── KaTeX ── */
+function useKatex(){
+  const[ok,setOk]=useState(!!window.katex);
+  useEffect(()=>{
+    if(window.katex){setOk(true);return;}
+    const c=document.createElement("link");
+    c.rel="stylesheet";c.href="https://cdnjs.cloudflare.com/ajax/libs/KaTeX/0.16.9/katex.min.css";
+    document.head.appendChild(c);
+    const s=document.createElement("script");
+    s.src="https://cdnjs.cloudflare.com/ajax/libs/KaTeX/0.16.9/katex.min.js";
+    s.onload=()=>setOk(true);
+    document.head.appendChild(s);
+  },[]);
+  return ok;
+}
+
+
+function K({children:tex,d=false}){
+  const ref=useRef(null);
+  const[,force]=useState(0);
+  useEffect(()=>{
+    if(!window.katex){const id=setInterval(()=>{if(window.katex){clearInterval(id);force(n=>n+1);}},100);return()=>clearInterval(id);}
+  },[]);
+  useEffect(()=>{
+    if(ref.current&&window.katex){
+      try{window.katex.render(tex,ref.current,{displayMode:d,throwOnError:false});}
+      catch(e){ref.current.textContent=tex;}
+    }
+  });
+  return d?<div ref={ref} style={{margin:"8px 0",overflowX:"auto"}}/>:<span ref={ref}/>;
+}
+
+/* ── Themes ── */
+const T={
+  light:{
+    bg:"#FAF9F6",bg2:"#FFFFFF",bg3:"#F3F1ED",
+    tx:"#1A1A2E",tx2:"#4A4A5A",tx3:"#8A8A98",
+    bd:"#E0DDD6",acc:"#2A5BD7",
+    red:"#C03030",grn:"#1F7A42",blu:"#2A5BD7",
+    redbg:"#FDF2F2",grnbg:"#F0F9F4",blubg:"#EEF2FF",
+    redbd:"#F5C6C6",grnbd:"#B8E4C8",blubd:"#BFCFFF",
+    trail:"#2A5BD7",axis:"#9A9AA8",grid:"#ECEAE4",dot:"#C03030",
+  },
+  dark:{
+    bg:"#0D0F14",bg2:"#161920",bg3:"#1C1F28",
+    tx:"#E8E6E1",tx2:"#A0A0AE",tx3:"#606070",
+    bd:"#2A2D38",acc:"#6B8EF0",
+    red:"#E85050",grn:"#3CB46A",blu:"#6B8EF0",
+    redbg:"#1C1214",grnbg:"#101C14",blubg:"#10141E",
+    redbd:"#3A1E1E",grnbd:"#1A3426",blubd:"#1E2844",
+    trail:"#6B8EF0",axis:"#4A4A5A",grid:"#1E2028",dot:"#E85050",
+  }
+};
+
+/* ── RK4 ── */
+function rk4(A,x,y,dt){
+  const f=(u,v)=>[A[0]*u+A[1]*v,A[2]*u+A[3]*v];
+  const k1=f(x,y),k2=f(x+dt/2*k1[0],y+dt/2*k1[1]),k3=f(x+dt/2*k2[0],y+dt/2*k2[1]),k4=f(x+dt*k3[0],y+dt*k3[1]);
+  return[x+dt/6*(k1[0]+2*k2[0]+2*k3[0]+k4[0]),y+dt/6*(k1[1]+2*k2[1]+2*k3[1]+k4[1])];
+}
+function sim(A,x0,y0,dt,n,bd){
+  const p=[[x0,y0]];let x=x0,y=y0;
+  for(let i=0;i<n;i++){
+    [x,y]=rk4(A,x,y,dt);
+    if(Math.abs(x)>bd||Math.abs(y)>bd){p.push([Math.max(-bd,Math.min(bd,x)),Math.max(-bd,Math.min(bd,y))]);break;}
+    p.push([x,y]);if(x*x+y*y<0.0004)break;
+  }
+  return p;
+}
+
+function PhaseSvg({A,size=200,c}){
+  const S=size,C=S/2,BD=3.2;
+  const toP=(x,y)=>[C+(x/BD)*(C-12),C-(y/BD)*(C-12)];
+  const fl=[A[0][0],A[0][1],A[1][0],A[1][1]];
+  const tr=fl[0]+fl[3],det=fl[0]*fl[3]-fl[1]*fl[2],disc=tr*tr-4*det;
+
+  const trails=useMemo(()=>{
+    const t=[];const dt=0.006;
+    if(det<0){
+      for(let a=0;a<2*Math.PI;a+=Math.PI/5)t.push(sim(fl,2.5*Math.cos(a),2.5*Math.sin(a),dt,600,BD));
+    } else if(tr>0.001&&det>0){
+      for(let a=0;a<2*Math.PI;a+=Math.PI/5)t.push(sim(fl,0.04*Math.cos(a),0.04*Math.sin(a),dt,900,BD));
+    } else {
+      for(let a=0;a<2*Math.PI;a+=Math.PI/5)t.push(sim(fl,2.6*Math.cos(a),2.6*Math.sin(a),dt,900,BD));
+    }
+    return t;
+  },[fl[0],fl[1],fl[2],fl[3]]);
+
+  const gridL=[];
+  for(let v=-3;v<=3;v++){if(!v)continue;
+    const[sx]=toP(v,0),[,sy]=toP(0,v);
+    gridL.push(<line key={`gx${v}`} x1={sx} y1={12} x2={sx} y2={S-12} stroke={c.grid} strokeWidth="0.5"/>);
+    gridL.push(<line key={`gy${v}`} x1={12} y1={sy} x2={S-12} y2={sy} stroke={c.grid} strokeWidth="0.5"/>);
+  }
+
+  return(
+    <svg viewBox={`0 0 ${S} ${S}`} width={S} style={{maxWidth:"100%",display:"block",borderRadius:8,background:c.bg3}}>
+      {gridL}
+      <line x1={12} y1={C} x2={S-12} y2={C} stroke={c.axis} strokeWidth="1"/>
+      <line x1={C} y1={12} x2={C} y2={S-12} stroke={c.axis} strokeWidth="1"/>
+      {trails.map((pts,i)=>{
+        if(pts.length<2)return null;
+        const sp=pts.map(([x,y])=>toP(x,y));
+        const d=sp.map((p,j)=>(j===0?`M${p[0]},${p[1]}`:`L${p[0]},${p[1]}`)).join(" ");
+        const ai=Math.min(Math.floor(pts.length*0.65),pts.length-2);
+        const[ax1,ay1]=sp[ai],[ax2,ay2]=sp[Math.min(ai+1,sp.length-1)];
+        const dx2=ax2-ax1,dy2=ay2-ay1,al=Math.sqrt(dx2*dx2+dy2*dy2);
+        let arrow=null;
+        if(al>1){const ux=dx2/al,uy=dy2/al,px=-uy*4,py=ux*4,bx=ax2-ux*6,by=ay2-uy*6;
+          arrow=<polygon key={`a${i}`} points={`${ax2},${ay2} ${bx+px},${by+py} ${bx-px},${by-py}`} fill={c.trail}/>;}
+        return <g key={i}><path d={d} fill="none" stroke={c.trail} strokeWidth="1.2" opacity="0.6" strokeLinecap="round"/>{arrow}</g>;
+      })}
+      <circle cx={C} cy={C} r="3" fill={c.dot}/>
+    </svg>
+  );
+}
+
+/* ── Data ── */
+const types=[
+  {key:"source",en:"Unstable Node",zh:"不稳定结点",
+   cond:"\\lambda_1,\\lambda_2\\in\\mathbb{R},\\;0<\\lambda_2<\\lambda_1",
+   formula:"\\mathbf{x}(t)=c_1 e^{\\lambda_1 t}\\mathbf{v}_1+c_2 e^{\\lambda_2 t}\\mathbf{v}_2",
+   note:"Trajectories move away from origin, aligning with the fast eigenvector.",
+   stab:"unstable",rot:false,A:[[4,1],[2,3]]},
+  {key:"sink",en:"Stable Node",zh:"稳定结点",
+   cond:"\\lambda_1,\\lambda_2\\in\\mathbb{R},\\;\\lambda_1<\\lambda_2<0",
+   formula:"\\mathbf{x}(t)=c_1 e^{\\lambda_1 t}\\mathbf{v}_1+c_2 e^{\\lambda_2 t}\\mathbf{v}_2",
+   note:"Trajectories converge, approaching tangent to the slow eigenvector.",
+   stab:"stable",rot:false,A:[[-3,1],[1,-3]]},
+  {key:"saddle",en:"Saddle Point",zh:"鞍点",
+   cond:"\\lambda_1<0<\\lambda_2",
+   formula:"\\mathbf{x}(t)=c_1 e^{\\lambda_1 t}\\mathbf{v}_1+c_2 e^{\\lambda_2 t}\\mathbf{v}_2",
+   note:"Stable manifold along v₁ (λ<0), unstable manifold along v₂ (λ>0).",
+   stab:"unstable",rot:false,A:[[1,3],[3,1]]},
+  {key:"center",en:"Center",zh:"中心",
+   cond:"\\lambda=\\pm\\beta i\\;(\\alpha=0)",
+   formula:"\\mathbf{x}=c_1(\\cos\\beta t\\,\\mathbf{a}-\\sin\\beta t\\,\\mathbf{b})+c_2(\\sin\\beta t\\,\\mathbf{a}+\\cos\\beta t\\,\\mathbf{b})",
+   note:"Closed ellipses. Lyapunov stable, NOT asymptotically stable.",
+   stab:"center",rot:true,A:[[0,-4],[1,0]]},
+  {key:"spiral_source",en:"Spiral Source",zh:"不稳定焦点",
+   cond:"\\lambda=\\alpha\\pm\\beta i,\\;\\alpha>0",
+   formula:"\\mathbf{x}=e^{\\alpha t}[c_1(\\cos\\beta t\\,\\mathbf{a}-\\sin\\beta t\\,\\mathbf{b})+c_2(\\cdots)]",
+   note:"Spirals outward. eᵅᵗ causes growth, trig causes rotation.",
+   stab:"unstable",rot:true,A:[[1,-1],[1,1]]},
+  {key:"spiral_sink",en:"Spiral Sink",zh:"稳定焦点",
+   cond:"\\lambda=\\alpha\\pm\\beta i,\\;\\alpha<0",
+   formula:"\\mathbf{x}=e^{\\alpha t}[c_1(\\cos\\beta t\\,\\mathbf{a}-\\sin\\beta t\\,\\mathbf{b})+c_2(\\cdots)]",
+   note:"Spirals inward. Asymptotically stable.",
+   stab:"stable",rot:true,A:[[-2,1],[-1,-2]]},
+  {key:"star",en:"Star Node",zh:"星形结点",
+   cond:"\\lambda_1=\\lambda_2=\\lambda,\\;A=\\lambda I",
+   formula:"\\mathbf{x}(t)=e^{\\lambda t}\\mathbf{x}(0)",
+   note:"Straight lines in every direction. 2 independent eigenvectors.",
+   stab:"depends",rot:false,A:[[3,0],[0,3]]},
+  {key:"improper",en:"Improper Node",zh:"退化结点",
+   cond:"\\lambda_1=\\lambda_2=\\lambda,\\;A\\neq\\lambda I\\;\\text{(Jordan)}",
+   formula:"\\mathbf{x}=c_1 e^{\\lambda t}\\mathbf{v}+c_2 e^{\\lambda t}(t\\mathbf{v}+\\mathbf{w})",
+   note:"Curves tangent to the single eigenvector. 1 eigenvector (defective).",
+   stab:"depends",rot:false,A:[[-2,1],[0,-2]]},
+];
+
+const examples=[
+  {tk:"source",m:"\\begin{pmatrix}4&1\\\\2&3\\end{pmatrix}",A:[[4,1],[2,3]],steps:[
+    "\\det(A{-}\\lambda I)=(4{-}\\lambda)(3{-}\\lambda)-2=\\lambda^2{-}7\\lambda{+}10=0",
+    "(\\lambda{-}5)(\\lambda{-}2)=0\\;\\Rightarrow\\;\\lambda_1{=}5,\\;\\lambda_2{=}2",
+    "\\mathbf{v}_1=(1,1)^T,\\quad\\mathbf{v}_2=(1,-2)^T",
+    "\\boxed{\\mathbf{x}(t)=c_1 e^{5t}\\begin{pmatrix}1\\\\1\\end{pmatrix}+c_2 e^{2t}\\begin{pmatrix}1\\\\-2\\end{pmatrix}}"]},
+  {tk:"sink",m:"\\begin{pmatrix}-3&1\\\\1&-3\\end{pmatrix}",A:[[-3,1],[1,-3]],steps:[
+    "\\lambda^2+6\\lambda+8=(\\lambda{+}4)(\\lambda{+}2)=0",
+    "\\lambda_1=-4,\\;\\lambda_2=-2,\\quad\\mathbf{v}_1=(1,-1)^T,\\;\\mathbf{v}_2=(1,1)^T",
+    "\\boxed{\\mathbf{x}(t)=c_1 e^{-4t}\\begin{pmatrix}1\\\\-1\\end{pmatrix}+c_2 e^{-2t}\\begin{pmatrix}1\\\\1\\end{pmatrix}}"]},
+  {tk:"saddle",m:"\\begin{pmatrix}1&3\\\\3&1\\end{pmatrix}",A:[[1,3],[3,1]],steps:[
+    "\\lambda^2-2\\lambda-8=(\\lambda{-}4)(\\lambda{+}2)=0",
+    "\\lambda_1=4,\\;\\lambda_2=-2,\\quad\\mathbf{v}_1=(1,1)^T,\\;\\mathbf{v}_2=(1,-1)^T",
+    "\\boxed{\\mathbf{x}(t)=c_1 e^{4t}\\begin{pmatrix}1\\\\1\\end{pmatrix}+c_2 e^{-2t}\\begin{pmatrix}1\\\\-1\\end{pmatrix}}"]},
+  {tk:"center",m:"\\begin{pmatrix}0&-4\\\\1&0\\end{pmatrix}",A:[[0,-4],[1,0]],steps:[
+    "\\lambda^2+4=0\\;\\Rightarrow\\;\\lambda=\\pm 2i\\quad(\\alpha=0,\\beta=2)",
+    "\\mathbf{v}=(2i,1)^T\\;\\Rightarrow\\;\\mathbf{a}=(0,1)^T,\\;\\mathbf{b}=(2,0)^T",
+    "\\boxed{\\mathbf{x}(t)=c_1\\begin{pmatrix}-2\\sin 2t\\\\\\cos 2t\\end{pmatrix}+c_2\\begin{pmatrix}2\\cos 2t\\\\\\sin 2t\\end{pmatrix}}",
+    "a_{21}=1>0\\;\\Rightarrow\\;\\boxed{\\text{counterclockwise (CCW)}}"]},
+  {tk:"spiral_source",m:"\\begin{pmatrix}1&-1\\\\1&1\\end{pmatrix}",A:[[1,-1],[1,1]],steps:[
+    "\\lambda^2-2\\lambda+2=0\\;\\Rightarrow\\;\\lambda=1\\pm i",
+    "\\mathbf{a}=(0,1)^T,\\;\\mathbf{b}=(1,0)^T",
+    "\\boxed{\\mathbf{x}(t)=c_1 e^t\\begin{pmatrix}-\\sin t\\\\\\cos t\\end{pmatrix}+c_2 e^t\\begin{pmatrix}\\cos t\\\\\\sin t\\end{pmatrix}}",
+    "a_{21}=1>0\\;\\Rightarrow\\;\\text{CCW}"]},
+  {tk:"spiral_sink",m:"\\begin{pmatrix}-2&1\\\\-1&-2\\end{pmatrix}",A:[[-2,1],[-1,-2]],steps:[
+    "\\lambda^2+4\\lambda+5=0\\;\\Rightarrow\\;\\lambda=-2\\pm i",
+    "\\mathbf{a}=(1,0)^T,\\;\\mathbf{b}=(0,1)^T",
+    "\\boxed{\\mathbf{x}(t)=c_1 e^{-2t}\\begin{pmatrix}\\cos t\\\\-\\sin t\\end{pmatrix}+c_2 e^{-2t}\\begin{pmatrix}\\sin t\\\\\\cos t\\end{pmatrix}}",
+    "a_{21}=-1<0\\;\\Rightarrow\\;\\text{CW (clockwise)}"]},
+  {tk:"star",m:"\\begin{pmatrix}3&0\\\\0&3\\end{pmatrix}",A:[[3,0],[0,3]],steps:[
+    "A=3I,\\;\\lambda=3\\;\\text{(repeated)},\\;\\text{every vector is eigenvector}",
+    "\\boxed{\\mathbf{x}(t)=e^{3t}(c_1,c_2)^T}"]},
+  {tk:"improper",m:"\\begin{pmatrix}-2&1\\\\0&-2\\end{pmatrix}",A:[[-2,1],[0,-2]],steps:[
+    "\\lambda=-2\\;\\text{(repeated)},\\;\\mathbf{v}=(1,0)^T,\\;\\mathbf{w}=(0,1)^T",
+    "(A+2I)\\mathbf{w}=\\mathbf{v}\\;\\checkmark",
+    "\\boxed{\\mathbf{x}(t)=c_1 e^{-2t}\\begin{pmatrix}1\\\\0\\end{pmatrix}+c_2 e^{-2t}\\left[t\\begin{pmatrix}1\\\\0\\end{pmatrix}+\\begin{pmatrix}0\\\\1\\end{pmatrix}\\right]}"]},
+];
+
+/* ── Classify ── */
+function fmtTex(x){return Math.abs(x-Math.round(x))<1e-9?String(Math.round(x)):x.toFixed(3).replace(/0+$/,"").replace(/\.$/,"");}
+
+function classify(a,b,c,d){
+  const tr=a+d,det=a*d-b*c,disc=tr*tr-4*det,eps=1e-10;
+  if(Math.abs(det)<eps){
+    if(Math.abs(a)+Math.abs(b)+Math.abs(c)+Math.abs(d)<eps)
+      return{type:"zero",evTex:"\\lambda_1=\\lambda_2=0",desc:"Zero matrix — every point is equilibrium.",stab:"—"};
+    return{type:"degen",evTex:`\\lambda_1=${fmtTex(tr)},\\;\\lambda_2=0`,desc:"det(A) = 0 — line of non-isolated equilibria.",stab:"degenerate"};
+  }
+  if(det<-eps){
+    const sq=Math.sqrt(disc),l1=(tr+sq)/2,l2=(tr-sq)/2;
+    return{type:"saddle",evTex:`\\lambda_1=${fmtTex(l1)},\\;\\lambda_2=${fmtTex(l2)}`,stab:"unstable"};}
+  if(disc<-eps){
+    const al=tr/2,be=Math.sqrt(-disc)/2;
+    const rot=c>eps?"CCW":c<-eps?"CW":"—";
+    if(Math.abs(al)<eps) return{type:"center",evTex:`\\lambda=\\pm ${fmtTex(be)}\\,i`,rot,stab:"center"};
+    if(al>0) return{type:"spiral_source",evTex:`\\lambda=${fmtTex(al)}\\pm ${fmtTex(be)}\\,i`,rot,stab:"unstable"};
+    return{type:"spiral_sink",evTex:`\\lambda=${fmtTex(al)}\\pm ${fmtTex(be)}\\,i`,rot,stab:"stable"};}
+  if(Math.abs(disc)<eps){
+    const lam=tr/2;
+    const isScalar=Math.abs(a-lam)+Math.abs(b)+Math.abs(c)+Math.abs(d-lam)<eps;
+    if(isScalar) return{type:"star",evTex:`\\lambda=${fmtTex(lam)}\\;\\text{(repeated)}`,stab:lam<0?"stable":"unstable"};
+    return{type:"improper",evTex:`\\lambda=${fmtTex(lam)}\\;\\text{(repeated, defective)}`,stab:lam<0?"stable":"unstable"};}
+  const sq=Math.sqrt(disc),l1=(tr+sq)/2,l2=(tr-sq)/2;
+  if(tr>eps) return{type:"source",evTex:`\\lambda_1=${fmtTex(l1)},\\;\\lambda_2=${fmtTex(l2)}`,stab:"unstable"};
+  return{type:"sink",evTex:`\\lambda_1=${fmtTex(l1)},\\;\\lambda_2=${fmtTex(l2)}`,stab:"stable"};
+}
+
+/* ── Badge ── */
+function Badge({stab,c}){
+  const m={stable:{col:c.grn,bg:c.grnbg,bd:c.grnbd,l:"Stable（稳定）"},
+    unstable:{col:c.red,bg:c.redbg,bd:c.redbd,l:"Unstable（不稳定）"},
+    center:{col:c.blu,bg:c.blubg,bd:c.blubd,l:"Lyapunov Stable（中性稳定）"},
+    depends:{col:c.tx3,bg:c.bg3,bd:c.bd,l:"Depends on λ sign"},
+    degenerate:{col:c.tx3,bg:c.bg3,bd:c.bd,l:"Degenerate（退化）"},
+    "—":{col:c.tx3,bg:c.bg3,bd:c.bd,l:"—"}};
+  const s=m[stab]||m["—"];
+  return <span style={{display:"inline-block",padding:"2px 10px",borderRadius:12,fontSize:11,fontWeight:600,color:s.col,background:s.bg,border:`1px solid ${s.bd}`}}>{s.l}</span>;
+}
+
+/* ── App ── */
+function App(){
+  const[dark,setDark]=useState(false);
+  const[openEx,setOpenEx]=useState(null);
+  const[mat,setMat]=useState({a:"",b:"",c:"",d:""});
+  const[cr,setCr]=useState(null);
+  const[err,setErr]=useState("");
+  const katexOk=useKatex();
+
+  const c=dark?T.dark:T.light;
+  const mono="'JetBrains Mono',monospace";
+  const serif="'Crimson Pro',Georgia,serif";
+
+  const compute=()=>{
+    setErr("");setCr(null);
+    const{a:sa,b:sb,c:sc,d:sd}=mat;
+    if(!sa.trim()||!sb.trim()||!sc.trim()||!sd.trim()){setErr("Please fill all 4 entries.（请填写全部四个值）");return;}
+    const a=Number(sa),b=Number(sb),cv=Number(sc),d=Number(sd);
+    if([a,b,cv,d].some(v=>isNaN(v))){setErr("Invalid number detected.（请输入有效数字）");return;}
+    if([a,b,cv,d].some(v=>Math.abs(v)>1000)){setErr("|entry| must be ≤ 1000.（数值请控制在 ±1000 内）");return;}
+    setCr(classify(a,b,cv,d));
+  };
+
+  if(!katexOk) return <div style={{display:"flex",alignItems:"center",justifyContent:"center",height:"100vh",fontFamily:"Georgia",color:"#888",background:c.bg}}>Loading KaTeX…</div>;
+
+  const typeForCr=cr?types.find(t=>t.key===cr.type):null;
+
+  return(
+    <div style={{fontFamily:serif,background:c.bg,color:c.tx,minHeight:"100vh",padding:"0 16px 80px",transition:"background .3s,color .3s"}}>
+      <link href="https://fonts.googleapis.com/css2?family=Crimson+Pro:ital,wght@0,400;0,600;0,700;1,400&family=JetBrains+Mono:wght@400;600;700&display=swap" rel="stylesheet"/>
+
+      {/* Header */}
+      <header style={{maxWidth:700,margin:"0 auto",padding:"40px 0 28px",display:"flex",justifyContent:"space-between",alignItems:"flex-start"}}>
+        <div>
+          <h1 style={{fontSize:26,fontWeight:700,margin:"0 0 4px",letterSpacing:-0.5}}>Eigenvalue Field Guide</h1>
+          <p style={{fontSize:14,color:c.tx2,margin:0}}>Classification for <K>{"\\dot{\\mathbf{x}}=A\\mathbf{x}"}</K>, <K>{"A\\in\\mathbb{R}^{2\\times 2}"}</K></p>
+          <p style={{fontSize:12,color:c.tx3,margin:"2px 0 0"}}>二维线性系统特征值分类速查</p>
+        </div>
+        <button onClick={()=>setDark(!dark)} style={{background:c.bg3,border:`1px solid ${c.bd}`,borderRadius:8,padding:"6px 12px",cursor:"pointer",color:c.tx2,fontSize:14,fontFamily:mono}}>
+          {dark?"☀ Light":"☾ Dark"}
+        </button>
+      </header>
+
+      <main style={{maxWidth:700,margin:"0 auto"}}>
+
+        {/* §I Overview */}
+        <section style={{marginBottom:40}}>
+          <h2 style={{fontSize:12,fontWeight:700,color:c.acc,fontFamily:mono,letterSpacing:1,marginBottom:6}}>§I OVERVIEW</h2>
+          <h3 style={{fontSize:20,fontWeight:700,margin:"0 0 12px"}}>Classification Table（分类总览）</h3>
+          <div style={{overflowX:"auto"}}>
+          <table style={{width:"100%",borderCollapse:"collapse",fontSize:13,minWidth:480}}>
+            <thead><tr>{["Condition","Type（类型）","Stability"].map(h=>
+              <th key={h} style={{padding:"8px 10px",textAlign:"left",borderBottom:`2px solid ${c.bd}`,color:c.tx3,fontSize:10,fontFamily:mono,textTransform:"uppercase",letterSpacing:1}}>{h}</th>
+            )}</tr></thead>
+            <tbody>{types.map(t=>
+              <tr key={t.key} style={{borderBottom:`1px solid ${c.bd}`}}>
+                <td style={{padding:"7px 10px"}}><K>{t.cond}</K></td>
+                <td style={{padding:"7px 10px"}}>
+                  <a href={`#t-${t.key}`} style={{color:c.acc,textDecoration:"none",fontWeight:600}}>{t.en}</a>
+                  <span style={{color:c.tx3,fontSize:12,marginLeft:6}}>({t.zh})</span>
+                </td>
+                <td style={{padding:"7px 10px"}}><Badge stab={t.stab} c={c}/></td>
+              </tr>
+            )}</tbody>
+          </table>
+          </div>
+        </section>
+
+        {/* §II Theory */}
+        <section style={{marginBottom:40}}>
+          <h2 style={{fontSize:12,fontWeight:700,color:c.acc,fontFamily:mono,letterSpacing:1,marginBottom:6}}>§II THEORY</h2>
+          <h3 style={{fontSize:20,fontWeight:700,margin:"0 0 8px"}}>Detailed Classification（理论详解）</h3>
+          <div style={{background:c.blubg,border:`1px solid ${c.blubd}`,borderRadius:8,padding:"10px 14px",marginBottom:16,fontSize:13,color:c.tx2,lineHeight:1.7}}>
+            <strong style={{color:c.blu}}>Rotation rule:</strong> Evaluate <K>{"A(1,0)^T"}</K>. If <K>{"a_{21}>0"}</K> → CCW; if <K>{"a_{21}<0"}</K> → CW.
+          </div>
+          {types.map((t,i)=>
+            <div key={t.key} id={`t-${t.key}`} style={{background:c.bg2,border:`1px solid ${c.bd}`,borderRadius:10,padding:"18px 22px",marginBottom:10,scrollMarginTop:32}}>
+              <div style={{display:"flex",flexWrap:"wrap",gap:16,alignItems:"flex-start"}}>
+                <div style={{flex:"1 1 280px"}}>
+                  <div style={{display:"flex",alignItems:"baseline",gap:8,marginBottom:2}}>
+                    <span style={{fontSize:11,fontWeight:700,color:c.tx3,fontFamily:mono}}>{i+1}.</span>
+                    <h4 style={{fontSize:17,fontWeight:700,margin:0}}>{t.en}</h4>
+                    <span style={{fontSize:13,color:c.tx3}}>({t.zh})</span>
+                  </div>
+                  <div style={{marginTop:8}}>
+                    <div style={{fontSize:10,color:c.tx3,fontFamily:mono,textTransform:"uppercase",letterSpacing:1}}>Condition</div>
+                    <K d>{t.cond}</K>
+                  </div>
+                  <div>
+                    <div style={{fontSize:10,color:c.tx3,fontFamily:mono,textTransform:"uppercase",letterSpacing:1}}>General Solution</div>
+                    <K d>{t.formula}</K>
+                  </div>
+                  {t.rot&&<div style={{fontSize:12,color:c.blu,background:c.blubg,padding:"5px 10px",borderRadius:6,border:`1px solid ${c.blubd}`,marginBottom:6}}>
+                    ⟳ Check <K>{"a_{21}"}</K>: positive → CCW, negative → CW
+                  </div>}
+                  <p style={{fontSize:13,color:c.tx2,lineHeight:1.6,margin:"4px 0 8px"}}>{t.note}</p>
+                  <Badge stab={t.stab} c={c}/>
+                  <a href={`#e-${t.key}`} onClick={()=>setOpenEx(t.key)} style={{marginLeft:12,fontSize:12,color:c.acc,fontFamily:mono,textDecoration:"none",cursor:"pointer"}}>Example →</a>
+                </div>
+                <PhaseSvg A={t.A} size={148} c={c}/>
+              </div>
+            </div>
+          )}
+        </section>
+
+        {/* §III Examples */}
+        <section style={{marginBottom:40}}>
+          <h2 style={{fontSize:12,fontWeight:700,color:c.acc,fontFamily:mono,letterSpacing:1,marginBottom:6}}>§III EXAMPLES</h2>
+          <h3 style={{fontSize:20,fontWeight:700,margin:"0 0 12px"}}>Worked Problems（例题演练）</h3>
+          {examples.map((ex,i)=>{
+            const t=types.find(x=>x.key===ex.tk);
+            const isOpen=openEx===ex.tk;
+            return(
+              <div key={ex.tk} id={`e-${ex.tk}`} style={{background:c.bg2,border:`1px solid ${c.bd}`,borderRadius:10,marginBottom:8,overflow:"hidden",scrollMarginTop:32}}>
+                <button onClick={()=>setOpenEx(isOpen?null:ex.tk)} style={{width:"100%",display:"flex",alignItems:"center",gap:12,padding:"12px 18px",background:"none",border:"none",cursor:"pointer",textAlign:"left"}}>
+                  <span style={{fontFamily:mono,fontWeight:700,fontSize:12,color:c.acc,minWidth:20}}>{i+1}</span>
+                  <span style={{flex:1,fontSize:15,fontWeight:600,color:c.tx}}>{t.en} ({t.zh})</span>
+                  <span style={{fontSize:13,color:c.tx3}}><K>{ex.m}</K></span>
+                  <span style={{fontSize:18,color:c.tx3,transform:isOpen?"rotate(180deg)":"",transition:"transform .2s",display:"inline-block"}}>▾</span>
+                </button>
+                {isOpen&&<div style={{padding:"0 18px 18px",borderTop:`1px solid ${c.bd}`}}>
+                  <div style={{display:"flex",flexWrap:"wrap",gap:20,marginTop:14,alignItems:"flex-start"}}>
+                    <div style={{flex:"1 1 280px",minWidth:240}}>
+                      {ex.steps.map((s,j)=>{
+                        const isBox=s.includes("\\boxed");
+                        const isRot=s.includes("a_{21}");
+                        return <div key={j} style={{marginBottom:8,paddingLeft:12,borderLeft:`3px solid ${isBox?c.acc:isRot?c.blu:c.bd}`,background:isRot?c.blubg:"transparent",borderRadius:isRot?"0 6px 6px 0":0,padding:isRot?"6px 10px 6px 12px":undefined}}>
+                          <span style={{fontSize:10,color:isRot?c.blu:c.tx3,fontFamily:mono}}>{j+1}.</span>
+                          <K d>{s}</K>
+                        </div>;
+                      })}
+                      <a href={`#t-${ex.tk}`} style={{fontSize:12,color:c.acc,fontFamily:mono,textDecoration:"none"}}>← Theory</a>
+                    </div>
+                    <PhaseSvg A={ex.A} size={190} c={c}/>
+                  </div>
+                </div>}
+              </div>
+            );
+          })}
+        </section>
+
+        {/* §IV Calculator */}
+        <section style={{marginBottom:40}}>
+          <h2 style={{fontSize:12,fontWeight:700,color:c.acc,fontFamily:mono,letterSpacing:1,marginBottom:6}}>§IV CALCULATOR</h2>
+          <h3 style={{fontSize:20,fontWeight:700,margin:"0 0 12px"}}>Interactive Tool（交互计算器）</h3>
+          <div style={{background:c.bg2,border:`1px solid ${c.bd}`,borderRadius:10,padding:"22px"}}>
+            <div style={{display:"flex",alignItems:"center",gap:14,flexWrap:"wrap",marginBottom:14}}>
+              <span style={{fontSize:16,color:c.tx2,fontFamily:serif}}>A =</span>
+              <div style={{display:"flex",flexDirection:"column",gap:5}}>
+                <div style={{display:"flex",gap:5}}>
+                  {["a","b"].map(k=><input key={k} value={mat[k]} onChange={e=>setMat(m=>({...m,[k]:e.target.value}))} placeholder={k}
+                    onKeyDown={e=>{if(e.key==="Enter")compute();}}
+                    style={{width:68,padding:"7px 8px",borderRadius:6,border:`1px solid ${c.bd}`,background:c.bg,color:c.tx,fontSize:15,fontFamily:mono,textAlign:"center",outline:"none"}}/>)}
+                </div>
+                <div style={{display:"flex",gap:5}}>
+                  {["c","d"].map(k=><input key={k} value={mat[k]} onChange={e=>setMat(m=>({...m,[k]:e.target.value}))} placeholder={k}
+                    onKeyDown={e=>{if(e.key==="Enter")compute();}}
+                    style={{width:68,padding:"7px 8px",borderRadius:6,border:`1px solid ${c.bd}`,background:c.bg,color:c.tx,fontSize:15,fontFamily:mono,textAlign:"center",outline:"none"}}/>)}
+                </div>
+              </div>
+              <button onClick={compute} style={{padding:"10px 22px",borderRadius:8,border:"none",background:c.acc,color:"#fff",fontSize:14,fontWeight:600,fontFamily:mono,cursor:"pointer"}}>Compute</button>
+              <button onClick={()=>{setMat({a:"",b:"",c:"",d:""});setCr(null);setErr("");}} style={{padding:"10px 14px",borderRadius:8,border:`1px solid ${c.bd}`,background:"transparent",color:c.tx3,fontSize:12,fontFamily:mono,cursor:"pointer"}}>Clear</button>
+            </div>
+            {err&&<div style={{background:c.redbg,border:`1px solid ${c.redbd}`,borderRadius:8,padding:"8px 12px",fontSize:13,color:c.red,marginBottom:10}}>⚠ {err}</div>}
+            {cr&&<div style={{borderTop:`1px solid ${c.bd}`,paddingTop:14}}>
+              <div style={{display:"flex",flexWrap:"wrap",gap:20,alignItems:"flex-start"}}>
+                <div style={{flex:"1 1 280px",minWidth:240}}>
+                  <div style={{fontSize:10,color:c.tx3,fontFamily:mono,textTransform:"uppercase",letterSpacing:1}}>Classification</div>
+                  <div style={{fontSize:17,fontWeight:700,marginTop:4}}>
+                    {typeForCr?`${typeForCr.en} (${typeForCr.zh})`:cr.desc||cr.type}
+                  </div>
+                  <div style={{marginTop:6}}><Badge stab={cr.stab} c={c}/></div>
+                  <div style={{marginTop:10}}>
+                    <div style={{fontSize:10,color:c.tx3,fontFamily:mono,textTransform:"uppercase",letterSpacing:1}}>Eigenvalues</div>
+                    <K d>{cr.evTex}</K>
+                  </div>
+                  {cr.rot&&<div style={{fontSize:12,color:c.blu,background:c.blubg,padding:"5px 10px",borderRadius:6,border:`1px solid ${c.blubd}`,marginBottom:8}}>
+                    ⟳ <K>{`a_{21}=${fmtTex(Number(mat.c))}`}</K> → <strong>{cr.rot}</strong>
+                  </div>}
+                  {cr.desc&&<div style={{fontSize:13,color:c.tx2,background:c.bg3,padding:"8px 12px",borderRadius:8,border:`1px solid ${c.bd}`,marginTop:6}}>{cr.desc}</div>}
+                  {typeForCr&&<div style={{marginTop:8}}>
+                    <div style={{fontSize:10,color:c.tx3,fontFamily:mono,textTransform:"uppercase",letterSpacing:1}}>Solution Form</div>
+                    <K d>{typeForCr.formula}</K>
+                  </div>}
+                </div>
+                {typeForCr&&<PhaseSvg A={[[Number(mat.a),Number(mat.b)],[Number(mat.c),Number(mat.d)]]} size={200} c={c}/>}
+              </div>
+            </div>}
+            <div style={{borderTop:`1px solid ${c.bd}`,paddingTop:10,marginTop:14}}>
+              <span style={{fontSize:10,color:c.tx3,fontFamily:mono,letterSpacing:1}}>PRESETS: </span>
+              {[{l:"Source",v:"4,1,2,3"},{l:"Sink",v:"-3,1,1,-3"},{l:"Saddle",v:"1,3,3,1"},
+                {l:"Center",v:"0,-4,1,0"},{l:"Spiral↑",v:"1,-1,1,1"},{l:"Spiral↓",v:"-2,1,-1,-2"},
+                {l:"Star",v:"3,0,0,3"},{l:"Improper",v:"-2,1,0,-2"},{l:"Zero",v:"0,0,0,0"},
+                {l:"det=0",v:"1,2,2,4"}
+              ].map(p=>{
+                const[a,b,cv,d]=p.v.split(",");
+                return <button key={p.l} onClick={()=>{const m={a,b,c:cv,d};setMat(m);setErr("");setCr(classify(+a,+b,+cv,+d));}}
+                  style={{padding:"2px 7px",borderRadius:4,border:`1px solid ${c.bd}`,background:"transparent",color:c.tx3,fontSize:11,fontFamily:mono,cursor:"pointer",margin:"2px 2px"}}>{p.l}</button>;
+              })}
+            </div>
+          </div>
+        </section>
+
+        {/* §V Deploy */}
+        <section>
+          <h2 style={{fontSize:12,fontWeight:700,color:c.acc,fontFamily:mono,letterSpacing:1,marginBottom:6}}>§V DEPLOY</h2>
+          <h3 style={{fontSize:20,fontWeight:700,margin:"0 0 12px"}}>GitHub Pages（部署指南）</h3>
+          <div style={{background:c.bg2,border:`1px solid ${c.bd}`,borderRadius:10,padding:"18px 22px",fontFamily:mono,fontSize:13,color:c.tx2,lineHeight:2}}>
+            <div style={{color:c.tx3}}>// Create repo & push</div>
+            <div>$ gh repo create eigenvalue-guide --public</div>
+            <div>$ cp index.html eigenvalue-guide/ && cd eigenvalue-guide</div>
+            <div>$ git add . && git commit -m "init" && git push</div>
+            <div style={{color:c.tx3,marginTop:6}}>// Enable Pages: Settings → Pages → main / root</div>
+            <div style={{color:c.acc,marginTop:4}}>→ https://USERNAME.github.io/eigenvalue-guide/</div>
+          </div>
+          <p style={{fontSize:13,color:c.tx2,marginTop:10}}>
+            Tell me when ready — I will export a standalone <code style={{fontFamily:mono,background:c.bg3,padding:"1px 4px",borderRadius:3}}>index.html</code> for you to push.
+          </p>
+        </section>
+      </main>
+
+      <footer style={{maxWidth:700,margin:"40px auto 0",textAlign:"center",fontSize:11,color:c.tx3,fontFamily:mono}}>
+        Eigenvalue Field Guide · ODE Review Tool
+      </footer>
+    </div>
+  );
+}
+
+// Mount
+const root = ReactDOM.createRoot(document.getElementById('root'));
+root.render(React.createElement(App));
+  </script>
+</body>
+</html>
